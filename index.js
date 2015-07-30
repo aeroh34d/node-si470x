@@ -7,6 +7,8 @@ var readReg = new Buffer(32);
 var reg = new Array(16);
 var interruptPin = null;
 
+var waitBetweenIO = 2;
+
 /**
  * 
  * @param cfg [Object] Configuration object with any of the following properties:
@@ -60,12 +62,21 @@ module.exports = function(cfg) {
   // Turn on IC and unmute
   reg[0x02] = 0x4001;
   write();
+
+  // Set volume
+  reg[0x05] &= 0xfff0;
+  reg[0x05] |= 0x6;
+  write();
   
   // Expose API
   return {
-    seekUp: tune(true),
-    seekDown: tune(false),
-    getChannel: getChannel
+    seekUp: seek(true),
+    seekDown: seek(false),
+    getChannel: getChannel,
+    tune: tune,
+    incrementVolume: incrementVolume(1),
+    decrementVolume: incrementVolume(-1),
+    reset: reset,
   };
 };
 
@@ -74,8 +85,10 @@ module.exports = function(cfg) {
  *
  * @param seekUp [Boolean] whether the generated seek function should seek up
  * @returns the actual seek function
+ *     @param threshold [Number] [optional] Seek threshold (0-99) (default 50)
+ *     @param cb [Function] [optional] function to be called once the seeking is finished 
  */
-function tune(seekUp) {
+function seek(seekUp) {
   return function(threshold, cb) {
     cb = _.isFunction(threshold) ? threshold : _.isFunction(cb) ? cb : _.identity;
     threshold = _.isNumber(threshold) ? threshold * 1.28 : 64;
@@ -97,13 +110,45 @@ function tune(seekUp) {
  * Gets the current channel.
  *
  * @param skipRead [Boolean] [optional] If true, just read the channel from the shadow registers...don't require an additional read.
+ * @param cb [Function] [optional] function to call when the channel is known. If specified, getChannel will run asynchronously
  * @returns the current channel in MHz (i.e. 101.1)
  */
 function getChannel(skipRead) {
   if (!skipRead) {
     read();
   }
+  
   return ((reg[0x0b] & 0x03ff) * 2 + 875) / 10;
+}
+
+/**
+ * Tune to the specified station.
+ *
+ * @param station [Number] Human-readable station frequency in MHz, i.e. 101.3
+ * @param cb [Function] [optional] function to call when the tuning is finished
+ */
+function tune(station, cb) {
+}
+
+/**
+ * A wrapper for functions which increment (or decrement) the volume.
+ *
+ * @param delta [Number] The amount by which the volume should increase upon each call of the returned function.
+ * @returns a function which, when called, will increase the volume by delta
+ *     @param cb [Function] [optional] function to call when the volume has been changed
+ */
+function incrementVolume(delta) {
+  return function(cb) {
+    
+  };
+}
+
+/**
+ * Resets the Si470x.
+ *
+ * @param cb [Function] [optional] function to call once the Si470x has restarted
+ */
+function reset(cb) {
 }
 
 /**
@@ -113,9 +158,10 @@ function getChannel(skipRead) {
  */
 function onTuneComplete(cb) {
     if (interruptPin !== null) {
+      console.log('Waiting for interrupt...');
       return onInterrupt(cb);
     }
-    
+    console.log('Waiting for STC...');
     return onSTC(cb);
 }
 
@@ -124,6 +170,7 @@ function onTuneComplete(cb) {
  */
 function read() {
   readReg = rpio.i2cRead(32);
+  console.log('Read'); console.dir(readReg);
   reg[10] = readReg[0] * 256 + readReg[1];
   reg[11] = readReg[2] * 256 + readReg[3];
   reg[12] = readReg[4] * 256 + readReg[5];
@@ -146,6 +193,8 @@ function read() {
  * Write the values in reg[2] through reg[7] to the Si470x's corresponding registers
  */
 function write() {
+  // for (var i = 0; i < 999999; i++){}
+
   // This part's tricky. The top byte of register 0x02 is for commands, so must be treated differently.
   var cmd = (reg[2] & 0xFF00) >> 8;
   writeReg[0] = reg[2] & 0xFF;
@@ -159,11 +208,13 @@ function write() {
   writeReg[8] = reg[6] & 0xFF;
   writeReg[9] = (reg[7] & 0xFF00) >> 8;
   writeReg[10] = reg[7] & 0xFF;
+
+  console.log('Writing'); console.dir(writeReg);
   
   // Write the 11 bytes into the bottom of 0x02 through 0x07
   rpio.i2cWrite(writeReg, 11);
-  readReg[16] = cmd; // not sure why this is important....
-  
+  readReg[16] = cmd; // not sure why this is important...
+ 
   // Immediately read to ensure that reg is correct
   read();
 }
@@ -176,6 +227,7 @@ function write() {
 function onInterrupt(cb) {
   // Check for an interrupt
   if (rpio.read(interruptPin)) {
+    console.log('Found interrupt high');
     return cb();
   }
   // If it's not high yet, check back in ~5ms
@@ -191,6 +243,7 @@ function onSTC(cb) {
   // Check for STC high -- requires a full read of the i2c registers, so interrupt is better!
   read();
   if (reg[10] & 0x4000) {
+    console.log('Found STC high');
     return cb();
   }
   // If it's not high yet, check back in 10ms
@@ -199,5 +252,6 @@ function onSTC(cb) {
 
 // Attempt to nicely shutdown the i2c config
 process.on('exit', function() {
+  console.log('Shutting down I2C');
   rpio.i2cEnd();
 });
