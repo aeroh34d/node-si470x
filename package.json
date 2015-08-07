@@ -1,0 +1,36 @@
+{
+  "name": "si470x",
+  "version": "0.0.1",
+  "description": "A Raspberry Pi driver for SI4750 and SI4700 FM radio modules. ",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aeroh34d/si470x.git"
+  },
+  "keywords": [
+    "fm",
+    "radio",
+    "si4700",
+    "si4701",
+    "rpi",
+    "raspberry",
+    "pi",
+    "spi",
+    "receiver",
+    "rssi"
+  ],
+  "author": "Brandon Herren",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/aeroh34d/si470x/issues"
+  },
+  "homepage": "https://github.com/aeroh34d/si470x#readme",
+  "dependencies": {
+    "async": "^1.4.0",
+    "lodash": "^3.10.1",
+    "rpio": "^0.4.4"
+  }
+}
