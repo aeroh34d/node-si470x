@@ -7,17 +7,29 @@ var readReg = new Buffer(32);
 var reg = new Array(16);
 var interruptPin = false;
 
+/**
+ * 
+ * @param cfg [Object] Configuration object with any of the following properties:
+ *     * slaveAddress [Number] i2c slave address (default 0x10)
+ *     * baudRate [Number] i2c baud rate in Hertz (default 100kHz)
+ *     * clockDivider [Number] divider of 250MHz to set clock speed (default 2500 -> clock speed = 100kHz)
+ *     * interruptPin [Number] number of the GPIO pin for interrupts (default false -> don't use interrupts)
+ *     * mode [String] 'gpio' or 'physical', the numbering scheme to use to identify interruptPin
+ * @returns si470x controller
+ */
 module.exports = function(cfg) {
   cfg = cfg || {};
 
+  // Provide some likely defaults
   cfg = _.defaults(cfg, {
-    slaveAddress: 0x68,
-    baudRate: 100000,
-    clockDivider: 2500,
-    interruptPin: false,
-    mode: 'gpio'
+    slaveAddress: 0x10, // consumed by rpio
+    baudRate: 100000, // consumed by rpio
+    clockDivider: 2500, // consumed by rpio
+    interruptPin: false, // setting interruptPin implies interrupt mode is on
+    mode: 'gpio' // 'gpio' or 'physical', consumed by rpio
   });
   
+  // If interrupt mode is on, set up the interruptPin
   if (cfg.interruptPin) {
     // TODO validate mode
     rpio.setMode(cfg.mode);
@@ -25,19 +37,28 @@ module.exports = function(cfg) {
     rpio.setInput(cfg.interruptPin);
   }
 
+  // Start up i2c and set config
   rpio.i2cBegin();
   rpio.i2cSetSlaveAddress(cfg.slaveAddress);
   rpio.i2cSetBaudRate(cfg.baudRate);
   rpio.i2cSetClockDivider(cfg.clockDivider);
   
+  // Read first to initialize local shadow of registers
   read();
 
+  // API
   return {
     seekUp: tune(true),
     seekDown: tune(false)
   };
 };
 
+/**
+ * A wrapper for seek functions that provides the direction to seek.
+ *
+ * @param seekUp [Boolean] whether the generated seek function should seek up
+ * @returns the actual seek function
+ */
 function tune(seekUp) {
   return function(threshold, cb) {
     cb = _.isFunction(threshold) ? threshold : _.isFunction(cb) ? cb : _.identity;
@@ -49,20 +70,29 @@ function tune(seekUp) {
     reg[2] |= 0x0100;
     write();
     
-    if (interruptPin) {
-      return waitForInterrupt(function() {
-        read();
-        cb();
-      });
-    }
-    
-    return waitForSTC(function() {
+    return onTuneComplete(function() {
       read();
-      cb();
+      return cb();
     });
   };
 }
 
+/**
+ * Calls cb when a tuning operation is complete. If interrupt mode is on, this is signified by an interrupt. Otherwise, it is signified by STC going high.
+ *
+ * @param cb [Function] function to call upon completion of the tuning operation
+ */
+function onTuneComplete(cb) {
+    if (interruptPin) {
+      return onInterrupt(cb);
+    }
+    
+    return onSTC(cb);
+}
+
+/**
+ * Read all registers and store their bytes in local shadow "reg"
+ */
 function read() {
   readReg = rpio.i2cRead(32);
   reg[10] = readReg[0] * 256 + readReg[1];
@@ -83,7 +113,11 @@ function read() {
   reg[9] = readReg[30] * 256 + readReg[31];
 }
 
+/**
+ * Write the values in reg[2] through reg[7] to the Si470x's corresponding registers
+ */
 function write() {
+  // This part's tricky. The top byte of register 0x02 is for commands, so must be treated differently.
   var cmd = (reg[2] & 0xFF00) >> 8;
   writeReg[0] = reg[2] & 0xFF;
   writeReg[1] = (reg[3] & 0xFF00) >> 8;
@@ -97,26 +131,44 @@ function write() {
   writeReg[9] = (reg[7] & 0xFF00) >> 8;
   writeReg[10] = reg[7] & 0xFF;
   
+  // Write the 11 bytes into the bottom of 0x02 through 0x07
   rpio.i2cWrite(writeReg, 11);
-  readReg[16] = cmd;
+  readReg[16] = cmd; // not sure why this is important....
+  
+  // Immediately read to ensure that reg is correct
   read();
 }
 
-function waitForInterrupt(cb) {
+/**
+ * Call cb when an interrupt occurs on interruptPin.
+ *
+ * @param cb [Function] callback on interrupt
+ */
+function onInterrupt(cb) {
+  // Check for an interrupt
   if (rpio.read(interruptPin)) {
     return cb();
   }
-  setTimeout(_.partial(waitForInterrupt, cb), 10);
+  // If it's not high yet, check back in ~5ms
+  setTimeout(_.partial(onInterrupt, cb), 5);
 }
 
-function waitForSTC(cb) {
+/**
+ * Call cb when STC goes high.
+ *
+ * @param cb [Function] callback when STC goes high
+ */
+function onSTC(cb) {
+  // Check for STC high -- requires a full read of the i2c registers, so interrupt is better!
   read();
-  if (reg[8] & 0x4000) {
+  if (reg[10] & 0x4000) {
     return cb();
   }
-  setTimeout(_.partial(waitForSTC, cb), 10);
+  // If it's not high yet, check back in 10ms
+  setTimeout(_.partial(onSTC, cb), 10);
 }
 
+// Attempt to nicely shutdown the i2c config
 process.on('exit', function() {
   rpio.i2cEnd();
 });
