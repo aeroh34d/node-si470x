@@ -1,5 +1,8 @@
-var si4700 = require('./index.js')();
+var si470x = require('./index.js')({interruptPin: 7});
 
-si4700.seekUp();
-si4700.seekDown();
+var was = si470x.getChannel(true);
+si470x.seekUp();
+var is = si470x.getChannel(true);
+
+console.log(is !== was);
 

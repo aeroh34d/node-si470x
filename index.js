@@ -5,7 +5,7 @@ var rpio = require('rpio'),
 var writeReg = new Buffer(11);
 var readReg = new Buffer(32);
 var reg = new Array(16);
-var interruptPin = false;
+var interruptPin = null;
 
 /**
  * 
@@ -25,12 +25,12 @@ module.exports = function(cfg) {
     slaveAddress: 0x10, // consumed by rpio
     baudRate: 100000, // consumed by rpio
     clockDivider: 2500, // consumed by rpio
-    interruptPin: false, // setting interruptPin implies interrupt mode is on
+    interruptPin: null, // setting interruptPin implies interrupt mode is on
     mode: 'gpio' // 'gpio' or 'physical', consumed by rpio
   });
   
   // If interrupt mode is on, set up the interruptPin
-  if (cfg.interruptPin) {
+  if (cfg.interruptPin !== null) {
     // TODO validate mode
     rpio.setMode(cfg.mode);
     // TODO validate interruptPin
@@ -45,11 +45,27 @@ module.exports = function(cfg) {
   
   // Read first to initialize local shadow of registers
   read();
-
-  // API
+  
+  // If interrupt mode is on, tell the chip
+  if (cfg.interruptPin !== null) {
+    reg[0x04] &= ~0x0C;
+    reg[0x04] |= 0x04;
+    write();
+  }
+  
+  // Turn on oscillator
+  reg[0x07] = 0x8100;
+  write();
+  
+  // Turn on IC and unmute
+  reg[0x02] = 0x4001;
+  write();
+  
+  // Expose API
   return {
     seekUp: tune(true),
-    seekDown: tune(false)
+    seekDown: tune(false),
+    getChannel: getChannel
   };
 };
 
@@ -78,12 +94,25 @@ function tune(seekUp) {
 }
 
 /**
+ * Gets the current channel.
+ *
+ * @param skipRead [Boolean] [optional] If true, just read the channel from the shadow registers...don't require an additional read.
+ * @returns the current channel in MHz (i.e. 101.1)
+ */
+function getChannel(skipRead) {
+  if (!skipRead) {
+    read();
+  }
+  return ((reg[0x0b] & 0x03ff) * 2 + 875) / 10;
+}
+
+/**
  * Calls cb when a tuning operation is complete. If interrupt mode is on, this is signified by an interrupt. Otherwise, it is signified by STC going high.
  *
  * @param cb [Function] function to call upon completion of the tuning operation
  */
 function onTuneComplete(cb) {
-    if (interruptPin) {
+    if (interruptPin !== null) {
       return onInterrupt(cb);
     }
     
